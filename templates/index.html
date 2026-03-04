@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MT5 Trading Bot Control Panel</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; background-color: #f8f9fa; color: #212529; }
+        .container { max-width: 1200px; margin: 20px auto; padding: 20px; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1, h2 { color: #343a40; }
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 15px; align-items: center; }
+        .form-grid label { font-weight: 500; }
+        .form-grid input { width: 100%; padding: 8px; border: 1px solid #ced4da; border-radius: 4px; box-sizing: border-box; }
+        .symbol-row { padding: 15px; border: 1px solid #e9ecef; border-radius: 5px; margin-bottom: 15px; background-color: #fdfdff; }
+        .controls, .status-box { padding: 15px; background-color: #e9ecef; border-radius: 5px; margin-top: 20px; display: flex; justify-content: space-between; align-items: center; }
+        .btn { padding: 10px 20px; border: none; border-radius: 5px; color: #fff; cursor: pointer; font-size: 16px; }
+        .btn-start { background-color: #28a745; }
+        .btn-stop { background-color: #dc3545; }
+        .btn-add { background-color: #007bff; }
+        .btn-remove { background-color: #6c757d; padding: 5px 10px; font-size: 12px; }
+        .btn:disabled { background-color: #6c757d; cursor: not-allowed; }
+        #log-container { height: 400px; background-color: #111; color: #0f0; font-family: 'Courier New', Courier, monospace; overflow-y: scroll; padding: 15px; border-radius: 5px; margin-top: 20px; white-space: pre-wrap; }
+        .status-indicator { font-weight: bold; }
+        .status-running { color: #28a745; }
+        .status-stopped { color: #dc3545; }
+        .checkbox-group { display: flex; align-items: center; gap: 10px; }
+        .checkbox-group input { width: auto; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>MT5 Trading Bot Control Panel</h1>
+
+    <div class="status-box">
+        <h2>Status</h2>
+        <div class="status-indicator {{ 'status-running' if bot_running else 'status-stopped' }}">
+            {{ 'Bot is RUNNING' if bot_running else 'Bot is STOPPED' }}
+        </div>
+    </div>
+
+    <form action="{{ url_for('start_bot') }}" method="POST" id="start-form">
+        <h2>Configuration</h2>
+        <div id="symbol-configs">
+            <!-- Symbol rows will be injected here by JavaScript -->
+        </div>
+        <button type="button" class="btn btn-add" onclick="addSymbolRow()">Add Symbol</button>
+        <hr style="margin: 20px 0;">
+        
+        <h2>Global Settings</h2>
+        <div class="checkbox-group">
+             <label for="stealth-mode">Stealth Mode:</label>
+             <input type="checkbox" id="stealth-mode" name="stealth_mode" value="true">
+        </div>
+
+        <div class="controls">
+            <button type="submit" class="btn btn-start" {{ 'disabled' if bot_running }}>Start Bot</button>
+    </form>
+    <form action="{{ url_for('stop_bot') }}" method="POST" id="stop-form" style="display: inline;">
+            <button type="submit" class="btn btn-stop" {{ 'disabled' if not bot_running }}>Stop Bot</button>
+    </form>
+        </div>
+
+    <h2>Live Logs</h2>
+    <div id="log-container"></div>
+</div>
+
+<!-- Template for a symbol row -->
+<template id="symbol-row-template">
+    <div class="symbol-row">
+        <div class="form-grid">
+            <div><label>Symbol</label><input type="text" name="symbol" value="EURUSD" required></div>
+            <div><label>Lot Size</label><input type="number" name="lot_size" value="0.01" step="0.01"></div>
+            <div><label>Pip Threshold</label><input type="number" name="pip_threshold" value="3.0" step="0.1"></div>
+            <div><label>TP (USD)</label><input type="number" name="tp_usd" value="50.0" step="1"></div>
+            <div><label>SL (USD)</label><input type="number" name="sl_usd" value="25.0" step="1"></div>
+            <div><label>Trailing SL (Pips)</label><input type="number" name="trailing_stop_pips" value="0.0" step="0.1"></div>
+            <div><label>Stealth TP (Pips)</label><input type="number" name="stealth_tp_pips" value="0.0" step="0.1"></div>
+        </div>
+        <button type="button" class="btn btn-remove" onclick="this.parentElement.remove()">Remove</button>
+    </div>
+</template>
+
+<script>
+    function addSymbolRow() {
+        const template = document.getElementById('symbol-row-template');
+        const clone = template.content.cloneNode(true);
+        document.getElementById('symbol-configs').appendChild(clone);
+    }
+
+    // Add one symbol row by default on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        addSymbolRow();
+        
+        // Start fetching logs immediately if bot is running
+        const botIsRunning = document.querySelector('.status-indicator').classList.contains('status-running');
+        if (botIsRunning) {
+            setInterval(fetchLogs, 2000); // Fetch logs every 2 seconds
+        }
+    });
+    
+    // If the form is submitted to start, begin polling logs
+    document.getElementById('start-form').addEventListener('submit', function() {
+        setTimeout(() => { // Give server a moment to start the process
+             setInterval(fetchLogs, 2000);
+        }, 1000);
+    });
+
+    function fetchLogs() {
+        fetch("{{ url_for('get_logs') }}")
+            .then(response => response.json())
+            .then(data => {
+                const logContainer = document.getElementById('log-container');
+                if (data.length > 0) {
+                    data.forEach(log => {
+                        const logEntry = document.createElement('div');
+                        logEntry.textContent = log;
+                        logContainer.appendChild(logEntry);
+                    });
+                    logContainer.scrollTop = logContainer.scrollHeight; // Auto-scroll to bottom
+                }
+            })
+            .catch(error => console.error('Error fetching logs:', error));
+    }
+</script>
+
+</body>
+</html>
