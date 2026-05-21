@@ -3,114 +3,869 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MT5 Trading Bot Control Panel</title>
+    <title>MT5 Trading Bot Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; background-color: #f8f9fa; color: #212529; }
-        .container { max-width: 1200px; margin: 20px auto; padding: 20px; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        h1, h2 { color: #343a40; }
-        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 15px; align-items: center; }
-        .form-grid label { font-weight: 500; }
-        .form-grid input { width: 100%; padding: 8px; border: 1px solid #ced4da; border-radius: 4px; box-sizing: border-box; }
-        .symbol-row { padding: 15px; border: 1px solid #e9ecef; border-radius: 5px; margin-bottom: 15px; background-color: #fdfdff; }
-        .controls, .status-box { padding: 15px; background-color: #e9ecef; border-radius: 5px; margin-top: 20px; display: flex; justify-content: space-between; align-items: center; }
-        .btn { padding: 10px 20px; border: none; border-radius: 5px; color: #fff; cursor: pointer; font-size: 16px; }
-        .btn-start { background-color: #28a745; }
-        .btn-stop { background-color: #dc3545; }
-        .btn-add { background-color: #007bff; }
-        .btn-remove { background-color: #6c757d; padding: 5px 10px; font-size: 12px; }
-        .btn:disabled { background-color: #6c757d; cursor: not-allowed; }
-        #log-container { height: 400px; background-color: #111; color: #0f0; font-family: 'Courier New', Courier, monospace; overflow-y: scroll; padding: 15px; border-radius: 5px; margin-top: 20px; white-space: pre-wrap; }
-        .status-indicator { font-weight: bold; }
-        .status-running { color: #28a745; }
-        .status-stopped { color: #dc3545; }
-        .checkbox-group { display: flex; align-items: center; gap: 10px; }
-        .checkbox-group input { width: auto; }
+        :root {
+            --bg-color: #0b0f19;
+            --card-bg: #151f32;
+            --card-header-bg: #1c2a42;
+            --border-color: #24354f;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            
+            --accent-blue: #3b82f6;
+            --accent-blue-hover: #2563eb;
+            --accent-green: #10b981;
+            --accent-green-hover: #059669;
+            --accent-red: #ef4444;
+            --accent-red-hover: #dc2626;
+            --accent-orange: #f59e0b;
+            --accent-purple: #8b5cf6;
+            
+            --log-bg: #070b13;
+            --font-main: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+        }
+
+        body {
+            font-family: var(--font-main);
+            margin: 0;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            line-height: 1.5;
+        }
+
+        .dashboard-container {
+            max-width: 1300px;
+            margin: 0 auto;
+            padding: 30px 20px;
+        }
+
+        /* Header Style */
+        .dashboard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 30px;
+        }
+
+        .dashboard-header h1 {
+            font-size: 24px;
+            font-weight: 700;
+            margin: 0;
+            background: linear-gradient(135deg, #60a5fa, #3b82f6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header-status {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background-color: var(--card-bg);
+            padding: 8px 16px;
+            border-radius: 30px;
+            border: 1px solid var(--border-color);
+        }
+
+        .header-status span:first-child {
+            color: var(--text-secondary);
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        /* Status Badges */
+        .status-badge {
+            font-size: 12px;
+            font-weight: 600;
+            padding: 4px 12px;
+            border-radius: 20px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-badge::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .status-running {
+            background-color: rgba(16, 185, 129, 0.15);
+            color: var(--accent-green);
+        }
+
+        .status-running::before {
+            background-color: var(--accent-green);
+            animation: pulse-glow 1.5s infinite;
+        }
+
+        .status-stopped {
+            background-color: rgba(239, 68, 68, 0.15);
+            color: var(--accent-red);
+        }
+
+        .status-stopped::before {
+            background-color: var(--accent-red);
+        }
+
+        @keyframes pulse-glow {
+            0% { transform: scale(0.85); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+            100% { transform: scale(0.85); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        /* Main Grid */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 420px 1fr;
+            gap: 25px;
+            align-items: start;
+        }
+
+        .column-left {
+            display: flex;
+            flex-direction: column;
+            gap: 25px;
+        }
+
+        /* Cards */
+        .card {
+            background-color: var(--card-bg);
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            padding: 24px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -4px rgba(0, 0, 0, 0.3);
+            transition: border-color 0.2s ease;
+        }
+
+        .card:hover {
+            border-color: #334155;
+        }
+
+        .card h3 {
+            margin-top: 0;
+            margin-bottom: 20px;
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        /* P&L Display */
+        .session-pnl-container {
+            background-color: rgba(7, 11, 19, 0.4);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .pnl-label {
+            display: block;
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 8px;
+        }
+
+        .pnl-indicator {
+            font-family: var(--font-mono);
+            font-size: 32px;
+            font-weight: 700;
+            transition: color 0.3s ease;
+        }
+
+        .pnl-neutral { color: var(--text-primary); }
+        .pnl-positive { color: var(--accent-green); text-shadow: 0 0 15px rgba(16, 185, 129, 0.2); }
+        .pnl-negative { color: var(--accent-red); text-shadow: 0 0 15px rgba(239, 68, 68, 0.2); }
+
+        /* Detail Rows */
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px dashed rgba(36, 53, 79, 0.5);
+        }
+
+        .detail-row:last-child {
+            border-bottom: none;
+        }
+
+        .detail-label {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .detail-value {
+            font-weight: 500;
+            font-size: 14px;
+            font-family: var(--font-mono);
+        }
+
+        .highlight-blue {
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px 20px;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            font-weight: 500;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .btn:active {
+            transform: scale(0.98);
+        }
+
+        .btn-start {
+            background-color: var(--accent-green);
+            color: white;
+        }
+
+        .btn-start:hover:not(:disabled) {
+            background-color: var(--accent-green-hover);
+            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);
+        }
+
+        .btn-stop {
+            background-color: var(--accent-red);
+            color: white;
+        }
+
+        .btn-stop:hover:not(:disabled) {
+            background-color: var(--accent-red-hover);
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
+        }
+
+        .btn-primary {
+            background-color: var(--accent-blue);
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background-color: var(--accent-blue-hover);
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+        }
+
+        .btn-secondary {
+            background-color: transparent;
+            border-color: var(--border-color);
+            color: var(--text-primary);
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background-color: rgba(36, 53, 79, 0.5);
+            border-color: #475569;
+        }
+
+        .btn-danger {
+            background-color: rgba(239, 68, 68, 0.1);
+            border-color: rgba(239, 68, 68, 0.3);
+            color: var(--accent-red);
+        }
+
+        .btn-danger:hover:not(:disabled) {
+            background-color: rgba(239, 68, 68, 0.2);
+            border-color: var(--accent-red);
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 12px;
+            border-radius: 6px;
+            width: auto;
+        }
+
+        .btn:disabled {
+            background-color: #1e293b !important;
+            border-color: #2d3748 !important;
+            color: #4a5568 !important;
+            cursor: not-allowed;
+            box-shadow: none !important;
+        }
+
+        .action-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .account-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        /* Form Inputs */
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+
+        .form-group input {
+            width: 100%;
+            background-color: #070b13;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 8px 12px;
+            color: var(--text-primary);
+            font-family: var(--font-main);
+            font-size: 14px;
+            box-sizing: border-box;
+            transition: border-color 0.2s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        .form-group-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            user-select: none;
+        }
+
+        .form-group-checkbox input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--accent-blue);
+            cursor: pointer;
+        }
+
+        .form-group-checkbox label {
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        /* Symbol Row Configurations */
+        .symbol-row {
+            background-color: rgba(7, 11, 19, 0.3);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 18px;
+            margin-bottom: 15px;
+            position: relative;
+        }
+
+        .symbol-row-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .symbol-row-header h4 {
+            margin: 0;
+            font-size: 14px;
+            color: var(--accent-blue);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+            gap: 15px;
+        }
+
+        .global-settings-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            align-items: center;
+            margin-top: 15px;
+        }
+
+        /* Logs Section */
+        .logs-card {
+            grid-column: 1 / -1;
+            margin-top: 5px;
+        }
+
+        #log-container {
+            height: 350px;
+            background-color: var(--log-bg);
+            color: #10b981;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            overflow-y: auto;
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            white-space: pre-wrap;
+            box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.8);
+        }
+
+        #log-container div {
+            margin-bottom: 4px;
+            border-left: 2px solid transparent;
+            padding-left: 8px;
+        }
+
+        #log-container div.log-error {
+            color: var(--accent-red);
+            border-left-color: var(--accent-red);
+        }
+
+        #log-container div.log-warning {
+            color: var(--accent-orange);
+            border-left-color: var(--accent-orange);
+        }
+
+        #log-container div.log-success {
+            color: var(--accent-green);
+            border-left-color: var(--accent-green);
+        }
+
+        /* Alert notifications */
+        .alert {
+            padding: 10px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            margin-top: 10px;
+            border: 1px solid transparent;
+        }
+
+        .alert-danger {
+            background-color: rgba(239, 68, 68, 0.1);
+            border-color: rgba(239, 68, 68, 0.2);
+            color: var(--accent-red);
+        }
+
+        .alert-success {
+            background-color: rgba(16, 185, 129, 0.1);
+            border-color: rgba(16, 185, 129, 0.2);
+            color: var(--accent-green);
+        }
+
+        .info-message {
+            color: var(--text-secondary);
+            font-size: 13px;
+            text-align: center;
+            padding: 15px;
+            background-color: rgba(7, 11, 19, 0.2);
+            border: 1px dashed var(--border-color);
+            border-radius: 8px;
+        }
     </style>
 </head>
 <body>
 
-<div class="container">
-    <h1>MT5 Trading Bot Control Panel</h1>
+<div class="dashboard-container">
+    <header class="dashboard-header">
+        <h1>MT5 Trading Bot Control Panel</h1>
+        <div class="header-status">
+            <span>Bot Status:</span>
+            <span id="status-indicator" class="status-badge {{ 'status-running' if bot_running else 'status-stopped' }}">
+                {{ 'RUNNING' if bot_running else 'STOPPED' }}
+            </span>
+        </div>
+    </header>
 
-    <div class="status-box">
-        <h2>Status</h2>
-        <div class="status-indicator {{ 'status-running' if bot_running else 'status-stopped' }}">
-            {{ 'Bot is RUNNING' if bot_running else 'Bot is STOPPED' }}
+    <div class="dashboard-grid">
+        <!-- Left Column: P&L, Status, and Account Switcher -->
+        <div class="column-left">
+            <!-- Bot Control Card -->
+            <div class="card">
+                <h3>Trading Session</h3>
+                
+                <div class="session-pnl-container">
+                    <span class="pnl-label">Session Profit / Loss</span>
+                    <span id="session-pnl-value" class="pnl-indicator pnl-neutral">$0.00</span>
+                </div>
+                
+                <div class="action-buttons">
+                    <button type="button" class="btn btn-start" id="start-btn" onclick="submitStartForm()" {{ 'disabled' if bot_running }}>Start Trading Bot</button>
+                    
+                    <form action="{{ url_for('stop_bot') }}" method="POST" id="stop-form" style="width: 100%;">
+                        <button type="submit" class="btn btn-stop" id="stop-btn" {{ 'disabled' if not bot_running }}>Stop Trading Bot</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- MT5 Account Card -->
+            <div class="card">
+                <h3>MT5 Account Status</h3>
+                
+                <div id="no-account-msg" style="display:none;" class="info-message">
+                    No account details cached. Active terminal session will be used.
+                </div>
+                
+                <div id="account-details">
+                    <div class="detail-row">
+                        <span class="detail-label">Login ID</span>
+                        <span id="acc-login" class="detail-value highlight-blue">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Name</span>
+                        <span id="acc-name" class="detail-value">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Server</span>
+                        <span id="acc-server" class="detail-value">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Balance</span>
+                        <span id="acc-balance" class="detail-value" style="color:var(--accent-green); font-weight:600;">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Equity</span>
+                        <span id="acc-equity" class="detail-value">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">Margin Level</span>
+                        <span id="acc-margin" class="detail-value">-</span>
+                    </div>
+                </div>
+
+                <div class="account-actions">
+                    <button class="btn btn-secondary btn-sm" id="switch-account-btn" onclick="toggleLoginForm()" {{ 'disabled' if bot_running }}>Switch Account</button>
+                    <button class="btn btn-danger btn-sm" id="clear-credentials-btn" onclick="clearCredentials()" style="display:none;" {{ 'disabled' if bot_running }}>Use Default</button>
+                </div>
+
+                <!-- Hidden Login Form -->
+                <div id="login-form-container" style="display:none; margin-top:20px; border-top: 1px solid var(--border-color); padding-top:20px;">
+                    <h4 style="margin-top:0; margin-bottom:15px; font-size:14px; color:var(--text-secondary); text-transform:uppercase;">Account Authorization</h4>
+                    <form id="login-form" onsubmit="handleAccountLogin(event)">
+                        <div class="form-group">
+                            <label for="login-val">Login ID</label>
+                            <input type="number" id="login-val" name="login" required placeholder="e.g. 32129519">
+                        </div>
+                        <div class="form-group">
+                            <label for="password-val">Password</label>
+                            <input type="password" id="password-val" name="password" required placeholder="Account Password">
+                        </div>
+                        <div class="form-group">
+                            <label for="server-val">Broker Server</label>
+                            <input type="text" id="server-val" name="server" required placeholder="e.g. Deriv-Demo or Deriv-Server">
+                        </div>
+                        <div id="login-alert" class="alert" style="display:none;"></div>
+                        <div style="display:flex; gap:10px; margin-top:15px;">
+                            <button type="submit" class="btn btn-primary" id="login-submit-btn" style="flex:2;">Login</button>
+                            <button type="button" class="btn btn-secondary" onclick="toggleLoginForm()" style="flex:1;">Cancel</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column: Settings & Symbol Configs -->
+        <div class="column-right">
+            <div class="card">
+                <form action="{{ url_for('start_bot') }}" method="POST" id="start-form">
+                    <h3>Symbol Configuration</h3>
+                    
+                    <div id="symbol-configs">
+                        <!-- Symbol rows will be injected here by JavaScript -->
+                    </div>
+                    
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="addSymbolRow()" style="margin-bottom: 25px;">+ Add Symbol Configuration</button>
+                    
+                    <h3 style="border-top: 1px solid var(--border-color); padding-top: 20px; margin-top: 25px; margin-bottom: 15px;">Global Parameters</h3>
+                    
+                    <div class="global-settings-grid">
+                        <div class="form-group-checkbox">
+                            <input type="checkbox" id="stealth-mode" name="stealth_mode" value="true">
+                            <label for="stealth-mode">Enable Stealth Mode</label>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="min-margin-level">Minimum Margin Level (%)</label>
+                            <input type="number" id="min-margin-level" name="min_margin_level" value="200.0" step="10" min="0">
+                        </div>
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
 
-    <form action="{{ url_for('start_bot') }}" method="POST" id="start-form">
-        <h2>Configuration</h2>
-        <div id="symbol-configs">
-            <!-- Symbol rows will be injected here by JavaScript -->
-        </div>
-        <button type="button" class="btn btn-add" onclick="addSymbolRow()">Add Symbol</button>
-        <hr style="margin: 20px 0;">
-        
-        <h2>Global Settings</h2>
-        <div style="display: flex; gap: 25px; align-items: center; margin-bottom: 20px;">
-            <div class="checkbox-group">
-                 <label for="stealth-mode">Stealth Mode:</label>
-                 <input type="checkbox" id="stealth-mode" name="stealth_mode" value="true">
-            </div>
-            <div style="display: flex; align-items: center; gap: 10px;">
-                 <label for="min-margin-level" style="font-weight: 500;">Min Margin Level (%):</label>
-                 <input type="number" id="min-margin-level" name="min_margin_level" value="200.0" step="10" min="0" style="width: 100px; padding: 6px; border: 1px solid #ced4da; border-radius: 4px;">
-            </div>
-        </div>
-
-        <div class="controls">
-            <button type="submit" class="btn btn-start" {{ 'disabled' if bot_running }}>Start Bot</button>
-    </form>
-    <form action="{{ url_for('stop_bot') }}" method="POST" id="stop-form" style="display: inline;">
-            <button type="submit" class="btn btn-stop" {{ 'disabled' if not bot_running }}>Stop Bot</button>
-    </form>
-        </div>
-
-    <h2>Live Logs</h2>
-    <div id="log-container"></div>
+    <!-- Live Logs Section -->
+    <div class="card logs-card">
+        <h3>Live Activity Logs</h3>
+        <div id="log-container"></div>
+    </div>
 </div>
 
 <!-- Template for a symbol row -->
 <template id="symbol-row-template">
     <div class="symbol-row">
-        <div class="form-grid">
-            <div><label>Symbol</label><input type="text" name="symbol" value="EURUSD" required></div>
-            <div><label>Lot Size</label><input type="number" name="lot_size" value="0.01" step="0.01"></div>
-            <div><label>Pip Threshold</label><input type="number" name="pip_threshold" value="3.0" step="0.1"></div>
-            <div><label>TP (USD)</label><input type="number" name="tp_usd" value="50.0" step="1"></div>
-            <div><label>SL (USD)</label><input type="number" name="sl_usd" value="25.0" step="1"></div>
-            <div><label>Trailing SL (Pips)</label><input type="number" name="trailing_stop_pips" value="0.0" step="0.1"></div>
-            <div><label>Stealth TP (Pips)</label><input type="number" name="stealth_tp_pips" value="0.0" step="0.1"></div>
+        <div class="symbol-row-header">
+            <h4>Configuration Target</h4>
+            <button type="button" class="btn btn-danger btn-sm" onclick="removeSymbolRow(this)" style="padding: 3px 8px; font-size: 11px;">Remove</button>
         </div>
-        <button type="button" class="btn btn-remove" onclick="this.parentElement.remove()">Remove</button>
+        <div class="form-grid">
+            <div class="form-group">
+                <label>Symbol Name</label>
+                <input type="text" name="symbol" value="EURUSD" required placeholder="e.g. EURUSD">
+            </div>
+            <div class="form-group">
+                <label>Strategy Type</label>
+                <select name="strategy_type" onchange="toggleStrategyFields(this)" style="width: 100%; background-color: #070b13; border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; color: var(--text-primary); font-family: var(--font-main); font-size: 14px; box-sizing: border-box;">
+                    <option value="hedge">Hedging Strategy</option>
+                    <option value="dual_buy_sell">Dual Buy-Sell Cycle</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Lot Size</label>
+                <input type="number" name="lot_size" value="0.01" step="0.01" min="0.001">
+            </div>
+            <div class="form-group hedge-group">
+                <label>Pip Threshold</label>
+                <input type="number" name="pip_threshold" value="3.0" step="0.1" min="0.1">
+            </div>
+            <div class="form-group hedge-group">
+                <label>TP (USD)</label>
+                <input type="number" name="tp_usd" value="50.0" step="0.5" min="0.1">
+            </div>
+            <div class="form-group hedge-group">
+                <label>SL (USD)</label>
+                <input type="number" name="sl_usd" value="25.0" step="0.5" min="0.1">
+            </div>
+            <div class="form-group hedge-group">
+                <label>Trailing SL (Pips)</label>
+                <input type="number" name="trailing_stop_pips" value="0.0" step="0.1" min="0">
+            </div>
+            <div class="form-group hedge-group">
+                <label>Stealth TP (Pips)</label>
+                <input type="number" name="stealth_tp_pips" value="0.0" step="0.1" min="0">
+            </div>
+            <div class="form-group dual-group" style="display: none;">
+                <label>Risk Amount (USD)</label>
+                <input type="number" name="risk_usd" value="1.0" step="0.1" min="0.1">
+            </div>
+            <div class="form-group dual-group" style="display: none;">
+                <label>Target Profit (USD)</label>
+                <input type="number" name="target_usd" value="2.5" step="0.1" min="0.1">
+            </div>
+        </div>
     </div>
 </template>
 
 <script>
+    function toggleStrategyFields(selectElement) {
+        const row = selectElement.closest('.symbol-row');
+        const hedgeGroups = row.querySelectorAll('.hedge-group');
+        const dualGroups = row.querySelectorAll('.dual-group');
+        
+        if (selectElement.value === 'dual_buy_sell') {
+            hedgeGroups.forEach(g => g.style.display = 'none');
+            dualGroups.forEach(g => g.style.display = 'block');
+        } else {
+            hedgeGroups.forEach(g => g.style.display = 'block');
+            dualGroups.forEach(g => g.style.display = 'none');
+        }
+    }
+
     function addSymbolRow() {
         const template = document.getElementById('symbol-row-template');
         const clone = template.content.cloneNode(true);
         document.getElementById('symbol-configs').appendChild(clone);
     }
 
-    // Add one symbol row by default on page load
-    document.addEventListener('DOMContentLoaded', function() {
-        addSymbolRow();
-        
-        // Start fetching logs immediately if bot is running
-        const botIsRunning = document.querySelector('.status-indicator').classList.contains('status-running');
-        if (botIsRunning) {
-            setInterval(fetchLogs, 2000); // Fetch logs every 2 seconds
+    function removeSymbolRow(button) {
+        // Ensure at least one configuration remains
+        const rows = document.querySelectorAll('.symbol-row');
+        if (rows.length > 1) {
+            button.closest('.symbol-row').remove();
+        } else {
+            alert("At least one symbol configuration is required.");
         }
-    });
-    
-    // If the form is submitted to start, begin polling logs
-    document.getElementById('start-form').addEventListener('submit', function() {
-        setTimeout(() => { // Give server a moment to start the process
-             setInterval(fetchLogs, 2000);
-        }, 1000);
-    });
+    }
+
+    function submitStartForm() {
+        document.getElementById('start-form').submit();
+    }
+
+    function toggleLoginForm() {
+        const container = document.getElementById('login-form-container');
+        if (container.style.display === 'none') {
+            container.style.display = 'block';
+            document.getElementById('login-alert').style.display = 'none';
+            // Scroll to form
+            container.scrollIntoView({ behavior: 'smooth' });
+        } else {
+            container.style.display = 'none';
+        }
+    }
+
+    function clearCredentials() {
+        if (!confirm("Are you sure you want to clear saved credentials and reset to the default MT5 terminal account?")) {
+            return;
+        }
+        
+        const clearBtn = document.getElementById('clear-credentials-btn');
+        clearBtn.disabled = true;
+        
+        fetch("{{ url_for('clear_credentials') }}", {
+            method: "POST"
+        })
+        .then(response => response.json())
+        .then(data => {
+            clearBtn.disabled = false;
+            if (data.success) {
+                alert(data.message);
+                updateStatus();
+            } else {
+                alert("Error: " + data.error);
+            }
+        })
+        .catch(error => {
+            clearBtn.disabled = false;
+            console.error('Error clearing credentials:', error);
+            alert("Connection error occurred.");
+        });
+    }
+
+    function handleAccountLogin(event) {
+        event.preventDefault();
+        
+        const submitBtn = document.getElementById('login-submit-btn');
+        const alertBox = document.getElementById('login-alert');
+        
+        submitBtn.disabled = true;
+        alertBox.style.display = 'block';
+        alertBox.className = 'alert alert-success';
+        alertBox.textContent = 'Authenticating with MT5 broker...';
+        
+        const formData = new FormData(event.target);
+        
+        fetch("{{ url_for('login_account') }}", {
+            method: "POST",
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            submitBtn.disabled = false;
+            if (data.success) {
+                alertBox.className = 'alert alert-success';
+                alertBox.textContent = data.message;
+                event.target.reset();
+                setTimeout(() => {
+                    toggleLoginForm();
+                    updateStatus();
+                }, 1500);
+            } else {
+                alertBox.className = 'alert alert-danger';
+                alertBox.textContent = data.error;
+            }
+        })
+        .catch(error => {
+            submitBtn.disabled = false;
+            alertBox.className = 'alert alert-danger';
+            alertBox.textContent = 'Connection error occurred.';
+            console.error('Login error:', error);
+        });
+    }
+
+    // Polling function
+    function updateStatus() {
+        fetch("{{ url_for('get_status') }}")
+            .then(response => response.json())
+            .then(data => {
+                // Update running indicator
+                const indicator = document.getElementById('status-indicator');
+                const startBtn = document.getElementById('start-btn');
+                const stopBtn = document.getElementById('stop-btn');
+                const switchBtn = document.getElementById('switch-account-btn');
+                const clearBtn = document.getElementById('clear-credentials-btn');
+                
+                if (data.bot_running) {
+                    indicator.textContent = "RUNNING";
+                    indicator.className = "status-badge status-running";
+                    startBtn.disabled = true;
+                    stopBtn.disabled = false;
+                    switchBtn.disabled = true;
+                    clearBtn.disabled = true;
+                } else {
+                    indicator.textContent = "STOPPED";
+                    indicator.className = "status-badge status-stopped";
+                    startBtn.disabled = false;
+                    stopBtn.disabled = true;
+                    switchBtn.disabled = false;
+                    clearBtn.disabled = false;
+                }
+                
+                // Update P&L
+                const pnlValue = document.getElementById('session-pnl-value');
+                const formattedPnl = (data.session_pnl >= 0 ? '+' : '') + data.session_pnl.toFixed(2);
+                pnlValue.textContent = `$${formattedPnl}`;
+                if (data.session_pnl > 0) {
+                    pnlValue.className = "pnl-indicator pnl-positive";
+                } else if (data.session_pnl < 0) {
+                    pnlValue.className = "pnl-indicator pnl-negative";
+                } else {
+                    pnlValue.className = "pnl-indicator pnl-neutral";
+                }
+                
+                // Update Account details
+                const accDetails = document.getElementById('account-details');
+                const noAccMsg = document.getElementById('no-account-msg');
+                
+                if (data.account) {
+                    document.getElementById('acc-login').textContent = data.account.login;
+                    document.getElementById('acc-name').textContent = data.account.name;
+                    document.getElementById('acc-server').textContent = data.account.server;
+                    document.getElementById('acc-balance').textContent = `$${data.account.balance.toFixed(2)} ${data.account.currency}`;
+                    document.getElementById('acc-equity').textContent = `$${data.account.equity.toFixed(2)} ${data.account.currency}`;
+                    
+                    let marginText = "N/A";
+                    if (data.account.margin_level > 0) {
+                        marginText = `${data.account.margin_level.toFixed(2)}%`;
+                    }
+                    document.getElementById('acc-margin').textContent = marginText;
+                    
+                    accDetails.style.display = "block";
+                    noAccMsg.style.display = "none";
+                    clearBtn.style.display = "inline-block";
+                } else {
+                    accDetails.style.display = "none";
+                    noAccMsg.style.display = "block";
+                    clearBtn.style.display = "none";
+                }
+            })
+            .catch(error => console.error('Error fetching status:', error));
+    }
 
     function fetchLogs() {
         fetch("{{ url_for('get_logs') }}")
@@ -121,13 +876,39 @@
                     data.forEach(log => {
                         const logEntry = document.createElement('div');
                         logEntry.textContent = log;
+                        
+                        // Parse log levels for formatting
+                        if (log.includes('ERROR:')) {
+                            logEntry.className = 'log-error';
+                        } else if (log.includes('WARNING:') || log.includes('CRITICAL:')) {
+                            logEntry.className = 'log-warning';
+                        } else if (log.includes('successfully') || log.includes('Success')) {
+                            logEntry.className = 'log-success';
+                        }
+                        
                         logContainer.appendChild(logEntry);
                     });
-                    logContainer.scrollTop = logContainer.scrollHeight; // Auto-scroll to bottom
+                    logContainer.scrollTop = logContainer.scrollHeight;
                 }
             })
             .catch(error => console.error('Error fetching logs:', error));
     }
+
+    // Page Load Setup
+    document.addEventListener('DOMContentLoaded', function() {
+        // Add default symbol configuration row
+        addSymbolRow();
+        
+        // Initial dashboard poll
+        updateStatus();
+        fetchLogs();
+        
+        // Poll every 2 seconds
+        setInterval(() => {
+            updateStatus();
+            fetchLogs();
+        }, 2000);
+    });
 </script>
 
 </body>

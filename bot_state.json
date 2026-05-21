@@ -1,10 +1,9 @@
 {
-    "EURUSD": {
-        "initial_buy_ticket": 8649467241,
-        "active_hedge_ticket": null
-    },
     "XAUUSD": {
-        "initial_buy_ticket": 8649474005,
-        "active_hedge_ticket": 8649474369
+        "initial_buy_ticket": 8649485793,
+        "active_hedge_ticket": 8649486152,
+        "buy_ticket": 8649491610,
+        "sell_ticket": 8649491612,
+        "stage": 1
     }
 }

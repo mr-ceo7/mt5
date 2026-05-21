@@ -95,20 +95,42 @@ MT5_LOGIN = int(os.getenv('MT5_LOGIN', '12345678'))
 MT5_PASSWORD = os.getenv('MT5_PASSWORD', 'your_password')
 MT5_SERVER = os.getenv('MT5_SERVER', 'your_server')
 
+CREDENTIALS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'account_credentials.json')
+
+def load_credentials():
+    """Loads account credentials from account_credentials.json."""
+    if os.path.exists(CREDENTIALS_FILE):
+        try:
+            with open(CREDENTIALS_FILE, 'r') as f:
+                data = json.load(f)
+                if 'login' in data and 'password' in data and 'server' in data:
+                    return int(data['login']), data['password'], data['server']
+        except Exception:
+            pass
+    return None
+
 # --- Data Structures ---
 SymbolConfig = namedtuple('SymbolConfig', [
     'name', 'lot_size', 'pip_threshold', 'tp_usd', 'sl_usd', 
-    'pip_move_threshold', 'trailing_stop_pips', 'stealth_mode', 'stealth_tp_pips'
+    'pip_move_threshold', 'trailing_stop_pips', 'stealth_mode', 'stealth_tp_pips',
+    'strategy_type', 'risk_usd', 'target_usd'
 ])
 
 # --- Bot Logic (Queue-based Logging) ---
 
 def initialize_mt5(log_queue):
-    """Initializes and connects to the MetaTrader 5 terminal."""
-    if MT5_SERVER == 'your_server':
+    """Initializes and connects to the MetaTrader 5 terminal using persisted or environment credentials."""
+    creds = load_credentials()
+    if creds:
+        login, password, server = creds
+        log_queue.put(f"Initializing MT5 with persisted credentials for account {login} on server {server}...")
+        success = mt5.initialize(login=login, password=password, server=server)
+    elif MT5_SERVER == 'your_server':
         # Use active terminal account if no credentials are provided via env
+        log_queue.put("Initializing MT5 using active terminal account...")
         success = mt5.initialize()
     else:
+        log_queue.put(f"Initializing MT5 with environment credentials for account {MT5_LOGIN}...")
         success = mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
         
     if not success:
@@ -270,10 +292,8 @@ def get_open_positions(symbol):
     total_profit = sum(p.profit for p in positions)
     return buy_orders, sell_orders, total_profit
 
-def process_symbol_logic(config: SymbolConfig, log_queue, margin_safe=True, realized_pnl_accumulator=None):
-    """Runs the trading logic for a single symbol using state persistence.
-    realized_pnl_accumulator: a list with a single float element [0.0] used to accumulate realized P&L.
-    """
+def process_hedging_logic(config: SymbolConfig, log_queue, margin_safe=True, realized_pnl_accumulator=None):
+    """Runs the trading logic for a single symbol using state persistence (HEDGING STRATEGY)."""
     symbol = config.name
     
     # Load state
@@ -396,6 +416,139 @@ def process_symbol_logic(config: SymbolConfig, log_queue, margin_safe=True, real
 
     return total_profit
 
+def process_dual_buy_sell_logic(config: SymbolConfig, log_queue, margin_safe=True, realized_pnl_accumulator=None):
+    """Runs the trading logic for a single symbol using Dual Buy-Sell Cycle strategy."""
+    symbol = config.name
+    
+    # Load state
+    state = load_bot_state()
+    symbol_state = state.get(symbol, {
+        "strategy_type": "dual_buy_sell",
+        "buy_ticket": None,
+        "sell_ticket": None,
+        "stage": 1
+    })
+    
+    buy_ticket = symbol_state.get("buy_ticket")
+    sell_ticket = symbol_state.get("sell_ticket")
+    
+    # Verify positions exist in MT5
+    buy_pos = get_open_position_by_ticket(buy_ticket)
+    sell_pos = get_open_position_by_ticket(sell_ticket)
+    
+    # Sync state if positions were closed externally
+    state_changed = False
+    if buy_ticket and not buy_pos:
+        log_queue.put(f"[{symbol}] Tracked BUY position {buy_ticket} no longer active. Clearing from state.")
+        symbol_state["buy_ticket"] = None
+        buy_ticket = None
+        state_changed = True
+        
+    if sell_ticket and not sell_pos:
+        log_queue.put(f"[{symbol}] Tracked SELL position {sell_ticket} no longer active. Clearing from state.")
+        symbol_state["sell_ticket"] = None
+        sell_ticket = None
+        state_changed = True
+        
+    if state_changed:
+        state[symbol] = symbol_state
+        save_bot_state(state)
+        
+    # Calculate current unrealized total profit of tracked positions
+    total_unrealized = 0.0
+    if buy_pos:
+        total_unrealized += buy_pos.profit
+    if sell_pos:
+        total_unrealized += sell_pos.profit
+
+    # Check margin safeguard before taking action
+    if not margin_safe:
+        return total_unrealized
+
+    # Case 1: No open tracked positions (Start of a new cycle)
+    if not buy_pos and not sell_pos:
+        log_queue.put(f"[{symbol}] Starting new Dual Buy-Sell cycle. Placing BUY and SELL orders.")
+        
+        # Place Buy order
+        buy_res = place_order(symbol, mt5.ORDER_TYPE_BUY, config.lot_size, log_queue, stealth_mode=config.stealth_mode)
+        # Place Sell order
+        sell_res = place_order(symbol, mt5.ORDER_TYPE_SELL, config.lot_size, log_queue, stealth_mode=config.stealth_mode)
+        
+        if buy_res or sell_res:
+            symbol_state["buy_ticket"] = buy_res.order if buy_res else None
+            symbol_state["sell_ticket"] = sell_res.order if sell_res else None
+            symbol_state["stage"] = 1
+            state[symbol] = symbol_state
+            save_bot_state(state)
+            
+    # Case 2: Both Buy and Sell positions are open (Stage 1)
+    elif buy_pos and sell_pos:
+        # Monitor losing leg
+        # If BUY profit <= -risk_usd
+        if buy_pos.profit <= -config.risk_usd:
+            log_queue.put(f"[{symbol}] BUY position {buy_pos.ticket} hit risk limit of -${config.risk_usd:.2f} (Profit: ${buy_pos.profit:.2f}). Closing.")
+            r = close_position(buy_pos, log_queue, "Risk limit hit")
+            if realized_pnl_accumulator is not None:
+                realized_pnl_accumulator[0] += r
+                
+            symbol_state["buy_ticket"] = None
+            symbol_state["stage"] = 2
+            state[symbol] = symbol_state
+            save_bot_state(state)
+            
+        # If SELL profit <= -risk_usd
+        elif sell_pos.profit <= -config.risk_usd:
+            log_queue.put(f"[{symbol}] SELL position {sell_pos.ticket} hit risk limit of -${config.risk_usd:.2f} (Profit: ${sell_pos.profit:.2f}). Closing.")
+            r = close_position(sell_pos, log_queue, "Risk limit hit")
+            if realized_pnl_accumulator is not None:
+                realized_pnl_accumulator[0] += r
+                
+            symbol_state["sell_ticket"] = None
+            symbol_state["stage"] = 2
+            state[symbol] = symbol_state
+            save_bot_state(state)
+            
+    # Case 3: Only one position is open (Stage 2)
+    else:
+        active_pos = buy_pos if buy_pos else sell_pos
+        pos_type = "BUY" if buy_pos else "SELL"
+        
+        # If the remaining position hits target_usd profit
+        if active_pos.profit >= config.target_usd:
+            log_queue.put(f"[{symbol}] Active {pos_type} position {active_pos.ticket} reached target profit of ${config.target_usd:.2f} (Profit: ${active_pos.profit:.2f}). Closing.")
+            r = close_position(active_pos, log_queue, "Target profit hit")
+            if realized_pnl_accumulator is not None:
+                realized_pnl_accumulator[0] += r
+                
+            symbol_state["buy_ticket"] = None
+            symbol_state["sell_ticket"] = None
+            symbol_state["stage"] = 1
+            state[symbol] = symbol_state
+            save_bot_state(state)
+            
+        # If the remaining position reverses and hits -risk_usd to prevent whipsaw losses
+        elif active_pos.profit <= -config.risk_usd:
+            log_queue.put(f"[{symbol}] Active {pos_type} position {active_pos.ticket} hit stop loss/risk limit of -${config.risk_usd:.2f} (Profit: ${active_pos.profit:.2f}). Closing.")
+            r = close_position(active_pos, log_queue, "Position reversed")
+            if realized_pnl_accumulator is not None:
+                realized_pnl_accumulator[0] += r
+                
+            symbol_state["buy_ticket"] = None
+            symbol_state["sell_ticket"] = None
+            symbol_state["stage"] = 1
+            state[symbol] = symbol_state
+            save_bot_state(state)
+
+    return total_unrealized
+
+def process_symbol_logic(config: SymbolConfig, log_queue, margin_safe=True, realized_pnl_accumulator=None):
+    """Routes the trading logic for a symbol to the configured strategy."""
+    strat = getattr(config, 'strategy_type', 'hedge')
+    if strat == 'dual_buy_sell':
+        return process_dual_buy_sell_logic(config, log_queue, margin_safe, realized_pnl_accumulator)
+    else:
+        return process_hedging_logic(config, log_queue, margin_safe, realized_pnl_accumulator)
+
 def run_bot(configs, log_queue, min_margin_level=200.0, shared_pnl=None):
     """The main trading bot loop."""
     log_queue.put("--- Starting Bot ---")
@@ -445,19 +598,16 @@ def run_bot(configs, log_queue, min_margin_level=200.0, shared_pnl=None):
                 for config in configs:
                     symbol = config.name
                     symbol_state = state.get(symbol, {})
-                    initial_buy_ticket = symbol_state.get("initial_buy_ticket")
-                    active_hedge_ticket = symbol_state.get("active_hedge_ticket")
                     
-                    initial_buy = get_open_position_by_ticket(initial_buy_ticket)
-                    active_hedge = get_open_position_by_ticket(active_hedge_ticket)
+                    # Close open tracked positions for all potential keys across strategies
+                    for tk_key in ["initial_buy_ticket", "active_hedge_ticket", "buy_ticket", "sell_ticket"]:
+                        ticket = symbol_state.get(tk_key)
+                        if ticket:
+                            pos = get_open_position_by_ticket(ticket)
+                            if pos:
+                                close_position(pos, log_queue, "Bot shutdown")
+                            symbol_state[tk_key] = None
                     
-                    if initial_buy:
-                        close_position(initial_buy, log_queue, "Bot shutdown")
-                    if active_hedge:
-                        close_position(active_hedge, log_queue, "Bot shutdown")
-                        
-                    symbol_state["initial_buy_ticket"] = None
-                    symbol_state["active_hedge_ticket"] = None
                     state[symbol] = symbol_state
                 save_bot_state(state)
         except Exception as e:
