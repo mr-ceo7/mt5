@@ -1,7 +1,10 @@
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 import multiprocessing
 import time
-import MetaTrader5 as mt5
+from mt5linux import MetaTrader5
+
+# Create the mt5linux proxy object
+mt5 = MetaTrader5(host='127.0.0.1', port=18812)
 
 # Import the refactored bot logic
 from trading_bot import start_bot_process, SymbolConfig, get_pip_size
@@ -40,6 +43,7 @@ def start_bot():
         trailing_stop_pips_list = [float(x) for x in request.form.getlist('trailing_stop_pips')]
         stealth_tp_pips_list = [float(x) for x in request.form.getlist('stealth_tp_pips')]
         stealth_mode = 'stealth_mode' in request.form
+        min_margin_level = float(request.form.get('min_margin_level', 200.0))
 
         # --- Validate Parameter List Lengths ---
         param_lists = [
@@ -91,7 +95,7 @@ def start_bot():
 
         # --- Start Process ---
         log_queue.put("Configuration successful. Starting bot process...")
-        bot_process = multiprocessing.Process(target=start_bot_process, args=(configs, log_queue))
+        bot_process = multiprocessing.Process(target=start_bot_process, args=(configs, log_queue, min_margin_level))
         bot_process.start()
 
     except Exception as e:

@@ -1,10 +1,94 @@
-import MetaTrader5 as mt5
+from mt5linux import MetaTrader5
 import time
 import os
 import argparse
 from collections import namedtuple
 import multiprocessing
 import threading
+import json
+
+# Create the mt5linux proxy object that connects to the rpyc server
+mt5 = MetaTrader5(host='127.0.0.1', port=18812)
+
+# --- State Persistence Helpers ---
+STATE_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bot_state.json')
+
+def load_bot_state():
+    """Loads the bot state from bot_state.json."""
+    if not os.path.exists(STATE_FILE_PATH):
+        return {}
+    try:
+        with open(STATE_FILE_PATH, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_bot_state(state):
+    """Saves the bot state to bot_state.json."""
+    try:
+        with open(STATE_FILE_PATH, 'w') as f:
+            json.dump(state, f, indent=4)
+    except Exception:
+        pass
+
+def get_open_position_by_ticket(ticket):
+    """Checks if a position with the given ticket is open, returning the position object or None."""
+    if not ticket:
+        return None
+    try:
+        positions = mt5.positions_get()
+        if positions is not None:
+            for p in positions:
+                if p.ticket == ticket:
+                    return p
+    except Exception:
+        pass
+    return None
+
+def ensure_connection(log_queue):
+    """Ensures connection to the MetaTrader 5 RPyC server, attempting reconnects if needed."""
+    global mt5
+    try:
+        # Ping the RPyC server using a cheap command
+        info = mt5.terminal_info()
+        if info is not None:
+            return True
+    except Exception as e:
+        log_queue.put(f"RPyC connection lost or unresponsive: {str(e)}. Attempting to reconnect...")
+    
+    for attempt in range(1, 6):
+        try:
+            log_queue.put(f"Reconnection attempt {attempt}/5...")
+            mt5 = MetaTrader5(host='127.0.0.1', port=18812)
+            if initialize_mt5(log_queue):
+                log_queue.put("Reconnected successfully to MetaTrader 5 RPyC server.")
+                return True
+        except Exception as ex:
+            log_queue.put(f"Reconnection attempt {attempt} failed: {str(ex)}")
+        time.sleep(3)
+    
+    log_queue.put("CRITICAL ERROR: Failed to reconnect to MetaTrader 5 RPyC server after 5 attempts.")
+    return False
+
+def check_margin_safeguard(min_margin_level, log_queue):
+    """Checks the account margin level against the configured threshold.
+    Returns True if margin is safe, False if it is below the threshold.
+    """
+    try:
+        acc_info = mt5.account_info()
+        if acc_info is None:
+            log_queue.put("WARNING: Failed to retrieve account info to check margin level.")
+            return True
+        
+        if acc_info.margin_level == 0.0:
+            return True
+            
+        if acc_info.margin_level < min_margin_level:
+            log_queue.put(f"CRITICAL WARNING: Account Margin Level ({acc_info.margin_level:.2f}%) is below minimum threshold ({min_margin_level:.2f}%). TRADING PAUSED.")
+            return False
+    except Exception as e:
+        log_queue.put(f"WARNING: Exception in margin safeguard check: {str(e)}")
+    return True
 
 # --- Account credentials ---
 MT5_LOGIN = int(os.getenv('MT5_LOGIN', '12345678'))
@@ -21,7 +105,13 @@ SymbolConfig = namedtuple('SymbolConfig', [
 
 def initialize_mt5(log_queue):
     """Initializes and connects to the MetaTrader 5 terminal."""
-    if not mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER):
+    if MT5_SERVER == 'your_server':
+        # Use active terminal account if no credentials are provided via env
+        success = mt5.initialize()
+    else:
+        success = mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
+        
+    if not success:
         log_queue.put(f"initialize() failed, error code = {mt5.last_error()}")
         return False
     log_queue.put("MetaTrader 5 initialized successfully.")
@@ -87,14 +177,35 @@ def handle_stealth_tp(position, stealth_tp_pips, log_queue):
 
 def place_order(symbol, order_type, lot_size, log_queue, price=None, magic=202403, stealth_mode=False):
     """Places a trade order."""
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        log_queue.put(f"[{symbol}] order_send failed: Failed to get tick info for price calculation.")
+        return None
+
+    order_price = price if price is not None else tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+
+    # Determine correct filling mode dynamically
+    info = mt5.symbol_info(symbol)
+    filling_mode = mt5.ORDER_FILLING_FOK
+    if info is not None:
+        if info.filling_mode & 1:
+            filling_mode = mt5.ORDER_FILLING_FOK
+        elif info.filling_mode & 2:
+            filling_mode = mt5.ORDER_FILLING_IOC
+        else:
+            filling_mode = mt5.ORDER_FILLING_RETURN
+
     request = {
         "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": lot_size, "type": order_type,
-        "price": price if price is not None else mt5.symbol_info_tick(symbol).ask if order_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(symbol).bid,
+        "price": order_price,
         "deviation": 10, "magic": magic, "comment": "trading_bot", "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
-        "sl": 0.0 if stealth_mode else None, "tp": 0.0 if stealth_mode else None,
+        "type_filling": filling_mode,
+        "sl": 0.0, "tp": 0.0,
     }
     result = mt5.order_send(request)
+    if result is None:
+        log_queue.put(f"[{symbol}] order_send failed and returned None. last_error: {mt5.last_error()}")
+        return None
     if result.retcode != mt5.TRADE_RETCODE_DONE:
         log_queue.put(f"[{symbol}] order_send failed, retcode={result.retcode}")
         return None
@@ -102,20 +213,44 @@ def place_order(symbol, order_type, lot_size, log_queue, price=None, magic=20240
     return result
 
 def close_position(position, log_queue, comment="closing position"):
-    """Closes a specific position."""
+    """Closes a specific position. Returns the position's profit at the time of closing, or 0.0 on failure."""
+    realized = position.profit  # Capture profit before closing
     order_type = mt5.ORDER_TYPE_SELL if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-    price = mt5.symbol_info_tick(position.symbol).bid if position.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(position.symbol).ask
+    
+    tick = mt5.symbol_info_tick(position.symbol)
+    if tick is None:
+        log_queue.put(f"[{position.symbol}] close_position failed: Failed to get tick info.")
+        return 0.0
+
+    price = tick.bid if position.type == mt5.ORDER_TYPE_BUY else tick.ask
+
+    # Determine correct filling mode dynamically
+    info = mt5.symbol_info(position.symbol)
+    filling_mode = mt5.ORDER_FILLING_FOK
+    if info is not None:
+        if info.filling_mode & 1:
+            filling_mode = mt5.ORDER_FILLING_FOK
+        elif info.filling_mode & 2:
+            filling_mode = mt5.ORDER_FILLING_IOC
+        else:
+            filling_mode = mt5.ORDER_FILLING_RETURN
+
     request = {
         "action": mt5.TRADE_ACTION_DEAL, "position": position.ticket, "symbol": position.symbol,
         "volume": position.volume, "type": order_type, "price": price, "deviation": 10,
         "magic": 202403, "comment": comment, "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": filling_mode,
     }
     result = mt5.order_send(request)
+    if result is None:
+        log_queue.put(f"[{position.symbol}] close_position failed and returned None. last_error: {mt5.last_error()}")
+        return 0.0
     if result.retcode == mt5.TRADE_RETCODE_DONE:
-        log_queue.put(f"[{position.symbol}] Position {position.ticket} closed successfully.")
+        log_queue.put(f"[{position.symbol}] Position {position.ticket} closed successfully. Realized: ${realized:.2f}")
+        return realized
     else:
         log_queue.put(f"[{position.symbol}] Failed to close position {position.ticket}, retcode={result.retcode}")
+        return 0.0
 
 def close_all_positions(symbol, log_queue, comment="closing all"):
     """Closes all open positions for a given symbol."""
@@ -135,75 +270,211 @@ def get_open_positions(symbol):
     total_profit = sum(p.profit for p in positions)
     return buy_orders, sell_orders, total_profit
 
-def process_symbol_logic(config: SymbolConfig, log_queue):
-    """Runs the trading logic for a single symbol."""
+def process_symbol_logic(config: SymbolConfig, log_queue, margin_safe=True, realized_pnl_accumulator=None):
+    """Runs the trading logic for a single symbol using state persistence.
+    realized_pnl_accumulator: a list with a single float element [0.0] used to accumulate realized P&L.
+    """
     symbol = config.name
-    buy_orders, sell_orders, total_profit = get_open_positions(symbol)
-
+    
+    # Load state
+    state = load_bot_state()
+    symbol_state = state.get(symbol, {"initial_buy_ticket": None, "active_hedge_ticket": None})
+    
+    initial_buy_ticket = symbol_state.get("initial_buy_ticket")
+    active_hedge_ticket = symbol_state.get("active_hedge_ticket")
+    
+    # Verify positions exist in MT5
+    initial_buy = get_open_position_by_ticket(initial_buy_ticket)
+    active_hedge = get_open_position_by_ticket(active_hedge_ticket)
+    
+    # Sync state if positions were closed externally
+    state_changed = False
+    if initial_buy_ticket and not initial_buy:
+        log_queue.put(f"[{symbol}] Tracked initial buy position {initial_buy_ticket} no longer active. Clearing from state.")
+        symbol_state["initial_buy_ticket"] = None
+        initial_buy_ticket = None
+        state_changed = True
+        
+    if active_hedge_ticket and not active_hedge:
+        log_queue.put(f"[{symbol}] Tracked active hedge position {active_hedge_ticket} no longer active. Clearing from state.")
+        symbol_state["active_hedge_ticket"] = None
+        active_hedge_ticket = None
+        state_changed = True
+        
+    if state_changed:
+        state[symbol] = symbol_state
+        save_bot_state(state)
+        
+    # Calculate total profit ONLY for tracked positions
+    total_profit = 0.0
+    if initial_buy:
+        total_profit += initial_buy.profit
+    if active_hedge:
+        total_profit += active_hedge.profit
+        
+    # Manage trailing stop and stealth TP for tracked positions
     if config.stealth_mode:
-        for p in buy_orders + sell_orders:
-            handle_trailing_stop(p, config.trailing_stop_pips, config.stealth_mode, log_queue)
-            handle_stealth_tp(p, config.stealth_tp_pips, log_queue)
+        if initial_buy:
+            handle_trailing_stop(initial_buy, config.trailing_stop_pips, config.stealth_mode, log_queue)
+            handle_stealth_tp(initial_buy, config.stealth_tp_pips, log_queue)
+        if active_hedge:
+            handle_trailing_stop(active_hedge, config.trailing_stop_pips, config.stealth_mode, log_queue)
+            handle_stealth_tp(active_hedge, config.stealth_tp_pips, log_queue)
 
-    if total_profit >= config.tp_usd:
-        log_queue.put(f"[{symbol}] Portfolio TP of ${config.tp_usd} reached. Profit: ${total_profit:.2f}. Closing positions.")
-        close_all_positions(symbol, log_queue, "Portfolio TP")
-        return
-    
-    if total_profit <= -config.sl_usd:
-        log_queue.put(f"[{symbol}] Portfolio SL of ${config.sl_usd} reached. Loss: ${total_profit:.2f}. Closing positions.")
-        close_all_positions(symbol, log_queue, "Portfolio SL")
-        return
+    # Check portfolio take profit and stop loss
+    if (initial_buy or active_hedge):
+        if total_profit >= config.tp_usd:
+            log_queue.put(f"[{symbol}] Portfolio TP of ${config.tp_usd} reached. Profit: ${total_profit:.2f}. Closing positions.")
+            if initial_buy:
+                r = close_position(initial_buy, log_queue, "Portfolio TP")
+                if realized_pnl_accumulator is not None: realized_pnl_accumulator[0] += r
+            if active_hedge:
+                r = close_position(active_hedge, log_queue, "Portfolio TP")
+                if realized_pnl_accumulator is not None: realized_pnl_accumulator[0] += r
+            symbol_state["initial_buy_ticket"] = None
+            symbol_state["active_hedge_ticket"] = None
+            state[symbol] = symbol_state
+            save_bot_state(state)
+            return total_profit
+        
+        if total_profit <= -config.sl_usd:
+            log_queue.put(f"[{symbol}] Portfolio SL of ${config.sl_usd} reached. Loss: ${total_profit:.2f}. Closing positions.")
+            if initial_buy:
+                r = close_position(initial_buy, log_queue, "Portfolio SL")
+                if realized_pnl_accumulator is not None: realized_pnl_accumulator[0] += r
+            if active_hedge:
+                r = close_position(active_hedge, log_queue, "Portfolio SL")
+                if realized_pnl_accumulator is not None: realized_pnl_accumulator[0] += r
+            symbol_state["initial_buy_ticket"] = None
+            symbol_state["active_hedge_ticket"] = None
+            state[symbol] = symbol_state
+            save_bot_state(state)
+            return total_profit
 
-    if not buy_orders and not sell_orders:
-        log_queue.put(f"[{symbol}] No open positions. Placing initial buy order.")
-        place_order(symbol, mt5.ORDER_TYPE_BUY, config.lot_size, log_queue, stealth_mode=config.stealth_mode)
-    
-    elif buy_orders and not sell_orders:
-        initial_buy = buy_orders[0]
+    # Check margin safeguard before taking action
+    if not margin_safe:
+        return total_profit
+
+    # Case A: No open tracked positions (No Buy, No Sell/Hedge)
+    if not initial_buy and not active_hedge:
+        log_queue.put(f"[{symbol}] No active tracked positions. Placing initial buy order.")
+        res = place_order(symbol, mt5.ORDER_TYPE_BUY, config.lot_size, log_queue, stealth_mode=config.stealth_mode)
+        if res:
+            symbol_state["initial_buy_ticket"] = res.order
+            state[symbol] = symbol_state
+            save_bot_state(state)
+            
+    # Case B: Only Buy is active (No Sell/Hedge)
+    elif initial_buy and not active_hedge:
         current_bid_price = mt5.symbol_info_tick(symbol).bid
         if current_bid_price < initial_buy.price_open - config.pip_move_threshold:
             log_queue.put(f"[{symbol}] Price dropped below buy. Placing initial sell order.")
-            place_order(symbol, mt5.ORDER_TYPE_SELL, config.lot_size, log_queue, stealth_mode=config.stealth_mode)
+            res = place_order(symbol, mt5.ORDER_TYPE_SELL, config.lot_size, log_queue, stealth_mode=config.stealth_mode)
+            if res:
+                symbol_state["active_hedge_ticket"] = res.order
+                state[symbol] = symbol_state
+                save_bot_state(state)
 
-    elif sell_orders:
-        latest_sell = max(sell_orders, key=lambda p: p.price_open)
+    # Case C: Active Sell/Hedge is active
+    elif active_hedge:
         current_ask_price = mt5.symbol_info_tick(symbol).ask
-        if current_ask_price > latest_sell.price_open + config.pip_move_threshold:
-            log_queue.put(f"[{symbol}] Price moved above latest sell. Hedging new sell.")
-            close_position(latest_sell, log_queue, "hedging new sell")
-            place_order(symbol, mt5.ORDER_TYPE_SELL, config.lot_size, log_queue, stealth_mode=config.stealth_mode)
+        if current_ask_price > active_hedge.price_open + config.pip_move_threshold:
+            log_queue.put(f"[{symbol}] Price moved above active hedge. Hedging new sell.")
+            r = close_position(active_hedge, log_queue, "hedging new sell")
+            if realized_pnl_accumulator is not None: realized_pnl_accumulator[0] += r
+            
+            # Instantly clear state for active hedge
+            symbol_state["active_hedge_ticket"] = None
+            state[symbol] = symbol_state
+            save_bot_state(state)
+            
+            res = place_order(symbol, mt5.ORDER_TYPE_SELL, config.lot_size, log_queue, stealth_mode=config.stealth_mode)
+            if res:
+                symbol_state["active_hedge_ticket"] = res.order
+                state[symbol] = symbol_state
+                save_bot_state(state)
 
-def run_bot(configs, log_queue):
+    return total_profit
+
+def run_bot(configs, log_queue, min_margin_level=200.0, shared_pnl=None):
     """The main trading bot loop."""
     log_queue.put("--- Starting Bot ---")
     for config in configs:
         log_queue.put(f"  - Symbol: {config.name}, Lot: {config.lot_size}, Pips: {config.pip_threshold}, TP: ${config.tp_usd}, SL: ${config.sl_usd}")
         if config.stealth_mode:
             log_queue.put(f"    Stealth Mode: ON, Trailing SL: {config.trailing_stop_pips} pips, Stealth TP: {config.stealth_tp_pips} pips")
+    log_queue.put(f"  - Min Margin Level safeguard: {min_margin_level}%")
     log_queue.put("--------------------")
+
+    # Accumulator for realized P&L (profits from closed positions)
+    realized_pnl = [0.0]
 
     try:
         while True:
+            # 1. Auto-Reconnection check before each trading iteration
+            if not ensure_connection(log_queue):
+                log_queue.put("Bot is waiting for RPyC connection to recover...")
+                time.sleep(10)
+                continue
+
+            # 2. Check margin safeguard
+            margin_safe = check_margin_safeguard(min_margin_level, log_queue)
+
+            # 3. Process each configured symbol and collect unrealized P&L
+            unrealized_pnl = 0.0
             for config in configs:
-                process_symbol_logic(config, log_queue)
+                try:
+                    symbol_unrealized = process_symbol_logic(config, log_queue, margin_safe, realized_pnl)
+                    if symbol_unrealized is not None:
+                        unrealized_pnl += symbol_unrealized
+                except Exception as e:
+                    log_queue.put(f"ERROR: Exception while processing symbol {config.name}: {str(e)}")
+
+            # 4. Update shared session P&L (realized + unrealized)
+            if shared_pnl is not None:
+                shared_pnl.value = realized_pnl[0] + unrealized_pnl
+
             time.sleep(5)
     except KeyboardInterrupt:
         log_queue.put("\nBot stopped by user.")
     finally:
-        log_queue.put("Closing all positions for all symbols...")
-        for config in configs:
-            close_all_positions(config.name, log_queue, "Bot shutdown")
+        log_queue.put("Closing tracked positions for all symbols on shutdown...")
+        try:
+            if ensure_connection(log_queue):
+                state = load_bot_state()
+                for config in configs:
+                    symbol = config.name
+                    symbol_state = state.get(symbol, {})
+                    initial_buy_ticket = symbol_state.get("initial_buy_ticket")
+                    active_hedge_ticket = symbol_state.get("active_hedge_ticket")
+                    
+                    initial_buy = get_open_position_by_ticket(initial_buy_ticket)
+                    active_hedge = get_open_position_by_ticket(active_hedge_ticket)
+                    
+                    if initial_buy:
+                        close_position(initial_buy, log_queue, "Bot shutdown")
+                    if active_hedge:
+                        close_position(active_hedge, log_queue, "Bot shutdown")
+                        
+                    symbol_state["initial_buy_ticket"] = None
+                    symbol_state["active_hedge_ticket"] = None
+                    state[symbol] = symbol_state
+                save_bot_state(state)
+        except Exception as e:
+            log_queue.put(f"ERROR: Exception during bot shutdown cleanup: {str(e)}")
 
-def start_bot_process(configs, log_queue):
+def start_bot_process(configs, log_queue, min_margin_level=200.0, shared_pnl=None):
     """The main entry point for the bot process."""
     if not initialize_mt5(log_queue):
         log_queue.put("Could not initialize MT5. Bot process terminated.")
         return
 
-    run_bot(configs, log_queue)
+    run_bot(configs, log_queue, min_margin_level, shared_pnl)
 
-    mt5.shutdown()
+    try:
+        mt5.shutdown()
+    except Exception:
+        pass
     log_queue.put("MetaTrader 5 connection closed.")
 
 # --- CLI-specific functionality ---
@@ -220,7 +491,6 @@ def log_consumer(log_queue, stop_event):
 def main_cli():
     """Parses CLI arguments and runs the bot in command-line mode."""
     parser = argparse.ArgumentParser(description="MetaTrader 5 Hedging Bot.")
-    # ... (all argparse definitions are the same as before)
     parser.add_argument('--symbol', type=str, nargs='+', default=["EURUSD"], help="List of symbols to trade")
     parser.add_argument('--lot-size', type=float, nargs='+', default=[0.01], help="List of lot sizes")
     parser.add_argument('--pip-threshold', type=float, nargs='+', default=[3.0], help="List of pip thresholds for hedging")
@@ -229,6 +499,7 @@ def main_cli():
     parser.add_argument('--stealth-mode', action='store_true', help="Enable stealth mode (internal SL/TP management)")
     parser.add_argument('--trailing-stop-pips', type=float, nargs='+', default=[0.0], help="Trailing stop in pips (requires stealth mode)")
     parser.add_argument('--stealth-tp-pips', type=float, nargs='+', default=[0.0], help="Per-trade take profit in pips (requires stealth mode)")
+    parser.add_argument('--min-margin-level', type=float, default=200.0, help="Minimum account margin level percentage to allow trading")
     
     args = parser.parse_args()
 
@@ -246,37 +517,55 @@ def main_cli():
             print(f"Error: --{param.replace('_', '-')} args must match --symbol args or be 1.")
             return
 
-    # --- Symbol Discovery ---
-    print("Attempting to connect to MT5 for symbol discovery...")
-    if mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER):
-        print("MT5 connection successful for discovery.")
-        
-        print("Discovering symbols by index:")
-        for i in range(100):
-            symbol_info = mt5.symbol_info(i)
-            if symbol_info is not None:
-                print(f"  - Index {i}: {symbol_info.name}")
-            
-        mt5.shutdown()
-        print("MT5 connection closed after discovery.")
-        return # Stop execution after listing symbols
-    else:
-        print(f"Could not connect to MT5 for symbol discovery. Error: {mt5.last_error()}")
+    # --- Initialize MT5 and build configs ---
+    log_queue = multiprocessing.Queue()
+    stop_event = threading.Event()
+    log_thread = threading.Thread(target=log_consumer, args=(log_queue, stop_event), daemon=True)
+    log_thread.start()
+
+    if not initialize_mt5(log_queue):
+        print("Could not initialize MT5. Exiting.")
+        stop_event.set()
         return
 
-    # The rest of the main_cli function is now unreachable because of the return,
-    # which is what we want for this debugging step.
-    # ...
-    
-    args = parser.parse_args()
-    # ... (The original logic remains below but won't be executed)
-    param_lists = {
-        'lot_size': args.lot_size, 'pip_threshold': args.pip_threshold,
-        'tp_usd': args.tp_usd, 'sl_usd': args.sl_usd,
-        'trailing_stop_pips': args.trailing_stop_pips, 'stealth_tp_pips': args.stealth_tp_pips,
-    }
-    # ...
-    return
+    configs = []
+    for i, symbol_name in enumerate(args.symbol):
+        if not mt5.symbol_select(symbol_name, True):
+            print(f"WARNING: Failed to enable symbol {symbol_name}. Please enable it in Market Watch. Skipping.")
+            continue
+        time.sleep(0.1)
+
+        pip_size = get_pip_size(symbol_name)
+        if not pip_size:
+            print(f"WARNING: Could not determine pip size for {symbol_name}. Skipping.")
+            continue
+        
+        config = SymbolConfig(
+            name=symbol_name,
+            lot_size=args.lot_size[i],
+            pip_threshold=args.pip_threshold[i],
+            tp_usd=args.tp_usd[i],
+            sl_usd=args.sl_usd[i],
+            pip_move_threshold=args.pip_threshold[i] * pip_size,
+            trailing_stop_pips=args.trailing_stop_pips[i],
+            stealth_mode=args.stealth_mode,
+            stealth_tp_pips=args.stealth_tp_pips[i]
+        )
+        configs.append(config)
+
+    if not configs:
+        print("ERROR: No valid symbol configurations provided. Exiting.")
+        mt5.shutdown()
+        stop_event.set()
+        return
+
+    run_bot(configs, log_queue, args.min_margin_level)
+
+    mt5.shutdown()
+    stop_event.set()
+    log_thread.join(timeout=2)
+    print("MetaTrader 5 connection closed.")
 
 if __name__ == "__main__":
     main_cli()
+
