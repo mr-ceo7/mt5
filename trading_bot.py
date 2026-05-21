@@ -46,28 +46,51 @@ def get_open_position_by_ticket(ticket):
     return None
 
 def ensure_connection(log_queue):
-    """Ensures connection to the MetaTrader 5 RPyC server, attempting reconnects if needed."""
+    """Ensures connection to the MetaTrader 5 RPyC server and the MT5 terminal IPC."""
     global mt5
+    
+    # 1. Verify RPyC proxy socket connection is alive
+    rpyc_alive = False
     try:
-        # Ping the RPyC server using a cheap command
+        conn = getattr(mt5, "_MetaTrader5__conn", None)
+        if conn is not None:
+            conn.ping()
+            rpyc_alive = True
+    except Exception as e:
+        log_queue.put(f"RPyC proxy connection lost: {str(e)}. Reconnecting socket...")
+
+    # If proxy is dead, we must recreate the MetaTrader5 object
+    if not rpyc_alive:
+        for attempt in range(1, 6):
+            try:
+                log_queue.put(f"Reconnecting RPyC proxy socket (attempt {attempt}/5)...")
+                mt5 = MetaTrader5(host='127.0.0.1', port=18812)
+                if initialize_mt5(log_queue):
+                    log_queue.put("Reconnected successfully to RPyC proxy.")
+                    return True
+            except Exception as ex:
+                log_queue.put(f"Proxy socket reconnection failed: {str(ex)}")
+            time.sleep(3)
+        log_queue.put("CRITICAL ERROR: Failed to reconnect to RPyC proxy.")
+        return False
+
+    # 2. RPyC proxy is alive. Verify MT5 Terminal IPC is connected.
+    try:
         info = mt5.terminal_info()
         if info is not None:
             return True
+        
+        # If terminal_info returned None, check error
+        err = mt5.last_error()
+        log_queue.put(f"MT5 Terminal IPC unresponsive or disconnected (last_error: {err}). Re-initializing IPC connection...")
     except Exception as e:
-        log_queue.put(f"RPyC connection lost or unresponsive: {str(e)}. Attempting to reconnect...")
-    
-    for attempt in range(1, 6):
-        try:
-            log_queue.put(f"Reconnection attempt {attempt}/5...")
-            mt5 = MetaTrader5(host='127.0.0.1', port=18812)
-            if initialize_mt5(log_queue):
-                log_queue.put("Reconnected successfully to MetaTrader 5 RPyC server.")
-                return True
-        except Exception as ex:
-            log_queue.put(f"Reconnection attempt {attempt} failed: {str(ex)}")
-        time.sleep(3)
-    
-    log_queue.put("CRITICAL ERROR: Failed to reconnect to MetaTrader 5 RPyC server after 5 attempts.")
+        log_queue.put(f"Error checking terminal IPC: {str(e)}. Re-initializing...")
+
+    # Re-initialize MT5 connection using existing proxy object
+    if initialize_mt5(log_queue):
+        log_queue.put("Reconnected successfully to MT5 Terminal IPC.")
+        return True
+        
     return False
 
 def check_margin_safeguard(min_margin_level, log_queue):
@@ -634,6 +657,14 @@ def run_bot(configs, log_queue, min_margin_level=200.0, shared_pnl=None):
 
 def start_bot_process(configs, log_queue, min_margin_level=200.0, shared_pnl=None):
     """The main entry point for the bot process."""
+    global mt5
+    try:
+        log_queue.put("Creating dedicated MT5 RPyC connection for bot process...")
+        mt5 = MetaTrader5(host='127.0.0.1', port=18812)
+    except Exception as e:
+        log_queue.put(f"ERROR: Failed to establish dedicated RPyC connection in bot process: {str(e)}")
+        return
+
     if not initialize_mt5(log_queue):
         log_queue.put("Could not initialize MT5. Bot process terminated.")
         return
