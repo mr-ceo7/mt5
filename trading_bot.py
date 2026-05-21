@@ -454,6 +454,25 @@ def process_dual_buy_sell_logic(config: SymbolConfig, log_queue, margin_safe=Tru
         state[symbol] = symbol_state
         save_bot_state(state)
         
+    # Check for incomplete Stage 1 setup (e.g. if one of the orders failed to place or was closed externally in stage 1)
+    if symbol_state.get("stage", 1) == 1 and (buy_pos or sell_pos) and (not buy_pos or not sell_pos):
+        log_queue.put(f"[{symbol}] Incomplete Stage 1 setup detected (BUY: {buy_pos.ticket if buy_pos else 'None'}, SELL: {sell_pos.ticket if sell_pos else 'None'}). Aborting cycle to reset.")
+        if buy_pos:
+            r = close_position(buy_pos, log_queue, "Aborting incomplete cycle")
+            if realized_pnl_accumulator is not None:
+                realized_pnl_accumulator[0] += r
+        if sell_pos:
+            r = close_position(sell_pos, log_queue, "Aborting incomplete cycle")
+            if realized_pnl_accumulator is not None:
+                realized_pnl_accumulator[0] += r
+                
+        symbol_state["buy_ticket"] = None
+        symbol_state["sell_ticket"] = None
+        symbol_state["stage"] = 1
+        state[symbol] = symbol_state
+        save_bot_state(state)
+        return 0.0
+        
     # Calculate current unrealized total profit of tracked positions
     total_unrealized = 0.0
     if buy_pos:
