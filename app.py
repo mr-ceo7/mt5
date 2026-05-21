@@ -77,6 +77,7 @@ def start_bot():
         stealth_tp_pips_list = [float(x) for x in request.form.getlist('stealth_tp_pips')]
         risk_usds = [float(x) if x else 1.0 for x in request.form.getlist('risk_usd')]
         target_usds = [float(x) if x else 2.5 for x in request.form.getlist('target_usd')]
+        stabilize_offsets = [float(x) if x else 0.5 for x in request.form.getlist('stabilize_offset_usd')]
         
         stealth_mode = 'stealth_mode' in request.form
         min_margin_level = float(request.form.get('min_margin_level', 200.0))
@@ -85,7 +86,7 @@ def start_bot():
         param_lists = [
             lot_sizes, pip_thresholds, tp_usds, sl_usds, 
             trailing_stop_pips_list, stealth_tp_pips_list,
-            strategy_types, risk_usds, target_usds
+            strategy_types, risk_usds, target_usds, stabilize_offsets
         ]
         if not all(len(p_list) == len(symbols) for p_list in param_lists):
             log_queue.put("ERROR: Mismatched number of parameters. Ensure every symbol row is fully filled out.")
@@ -123,7 +124,8 @@ def start_bot():
                 stealth_tp_pips=stealth_tp_pips_list[i],
                 strategy_type=strategy_types[i],
                 risk_usd=risk_usds[i],
-                target_usd=target_usds[i]
+                target_usd=target_usds[i],
+                stabilize_offset_usd=stabilize_offsets[i]
             )
             configs.append(config)
         
@@ -187,7 +189,8 @@ def get_status():
                     "profit": acc_info.profit,
                     "currency": acc_info.currency
                 }
-            mt5.shutdown()
+            if not bot_running:
+                mt5.shutdown()
     except Exception:
         pass
 

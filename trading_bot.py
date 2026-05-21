@@ -136,7 +136,7 @@ def load_credentials():
 SymbolConfig = namedtuple('SymbolConfig', [
     'name', 'lot_size', 'pip_threshold', 'tp_usd', 'sl_usd', 
     'pip_move_threshold', 'trailing_stop_pips', 'stealth_mode', 'stealth_tp_pips',
-    'strategy_type', 'risk_usd', 'target_usd'
+    'strategy_type', 'risk_usd', 'target_usd', 'stabilize_offset_usd'
 ])
 
 # --- Bot Logic (Queue-based Logging) ---
@@ -574,20 +574,21 @@ def process_dual_buy_sell_logic(config: SymbolConfig, log_queue, margin_safe=Tru
             save_bot_state(state)
 
         # Calculate dynamic trailing stop loss level (if active)
-        # S = target_usd + 0.5 * risk_usd
-        # V = target_usd + 1.5 * risk_usd
+        # S = target_usd + stabilize_offset_usd
+        # V = target_usd + stabilize_offset_usd + risk_usd
         R = config.risk_usd
         T = config.target_usd
-        stabilize_limit = T + 0.5 * R
+        O = config.stabilize_offset_usd
+        stabilize_limit = T + O
         trailing_sl_pnl = None
         
         if max_profit >= stabilize_limit:
-            transition_limit = T + 1.5 * R
+            transition_limit = stabilize_limit + R
             if max_profit < transition_limit:
                 # Interpolate from T (at max_profit = stabilize_limit)
-                # to T + 0.5 * R (at max_profit = transition_limit)
-                fraction = (max_profit - stabilize_limit) / (transition_limit - stabilize_limit)
-                trailing_sl_pnl = T + (0.5 * R) * fraction
+                # to T + O (at max_profit = transition_limit)
+                fraction = (max_profit - stabilize_limit) / R
+                trailing_sl_pnl = T + O * fraction
             else:
                 # Maintain constant distance of risk_usd below max_profit
                 trailing_sl_pnl = max_profit - R
