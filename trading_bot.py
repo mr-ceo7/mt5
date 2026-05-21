@@ -492,6 +492,7 @@ def process_dual_buy_sell_logic(config: SymbolConfig, log_queue, margin_safe=Tru
         symbol_state["buy_ticket"] = None
         symbol_state["sell_ticket"] = None
         symbol_state["stage"] = 1
+        symbol_state["max_stage2_profit"] = None
         state[symbol] = symbol_state
         save_bot_state(state)
         return 0.0
@@ -535,6 +536,7 @@ def process_dual_buy_sell_logic(config: SymbolConfig, log_queue, margin_safe=Tru
                 
             symbol_state["buy_ticket"] = None
             symbol_state["stage"] = 2
+            symbol_state["max_stage2_profit"] = sell_pos.profit
             state[symbol] = symbol_state
             save_bot_state(state)
             
@@ -547,6 +549,7 @@ def process_dual_buy_sell_logic(config: SymbolConfig, log_queue, margin_safe=Tru
                 
             symbol_state["sell_ticket"] = None
             symbol_state["stage"] = 2
+            symbol_state["max_stage2_profit"] = buy_pos.profit
             state[symbol] = symbol_state
             save_bot_state(state)
             
@@ -555,22 +558,57 @@ def process_dual_buy_sell_logic(config: SymbolConfig, log_queue, margin_safe=Tru
         active_pos = buy_pos if buy_pos else sell_pos
         pos_type = "BUY" if buy_pos else "SELL"
         
-        # If the remaining position hits target_usd profit
-        if active_pos.profit >= config.target_usd:
-            log_queue.put(f"[{symbol}] Active {pos_type} position {active_pos.ticket} reached target profit of ${config.target_usd:.2f} (Profit: ${active_pos.profit:.2f}). Closing.")
-            r = close_position(active_pos, log_queue, "Target profit hit")
+        # Load or initialize the max profit achieved during Stage 2
+        max_profit = symbol_state.get("max_stage2_profit")
+        if max_profit is None:
+            max_profit = active_pos.profit
+            symbol_state["max_stage2_profit"] = max_profit
+            state[symbol] = symbol_state
+            save_bot_state(state)
+            
+        # Update max profit if we hit a new peak
+        if active_pos.profit > max_profit:
+            max_profit = active_pos.profit
+            symbol_state["max_stage2_profit"] = max_profit
+            state[symbol] = symbol_state
+            save_bot_state(state)
+
+        # Calculate dynamic trailing stop loss level (if active)
+        # S = target_usd + 0.5 * risk_usd
+        # V = target_usd + 1.5 * risk_usd
+        R = config.risk_usd
+        T = config.target_usd
+        stabilize_limit = T + 0.5 * R
+        trailing_sl_pnl = None
+        
+        if max_profit >= stabilize_limit:
+            transition_limit = T + 1.5 * R
+            if max_profit < transition_limit:
+                # Interpolate from T (at max_profit = stabilize_limit)
+                # to T + 0.5 * R (at max_profit = transition_limit)
+                fraction = (max_profit - stabilize_limit) / (transition_limit - stabilize_limit)
+                trailing_sl_pnl = T + (0.5 * R) * fraction
+            else:
+                # Maintain constant distance of risk_usd below max_profit
+                trailing_sl_pnl = max_profit - R
+
+        # Check exit conditions
+        if trailing_sl_pnl is not None and active_pos.profit <= trailing_sl_pnl:
+            log_queue.put(f"[{symbol}] Active {pos_type} position {active_pos.ticket} hit trailing stop loss at ${trailing_sl_pnl:.2f} (Current profit: ${active_pos.profit:.2f}, Peak: ${max_profit:.2f}). Closing.")
+            r = close_position(active_pos, log_queue, "Trailing stop loss hit")
             if realized_pnl_accumulator is not None:
                 realized_pnl_accumulator[0] += r
                 
             symbol_state["buy_ticket"] = None
             symbol_state["sell_ticket"] = None
             symbol_state["stage"] = 1
+            symbol_state["max_stage2_profit"] = None
             state[symbol] = symbol_state
             save_bot_state(state)
-            
-        # If the remaining position reverses and hits -risk_usd to prevent whipsaw losses
-        elif active_pos.profit <= -config.risk_usd:
-            log_queue.put(f"[{symbol}] Active {pos_type} position {active_pos.ticket} hit stop loss/risk limit of -${config.risk_usd:.2f} (Profit: ${active_pos.profit:.2f}). Closing.")
+
+        # If it hasn't hit trailing stop, check original stop loss/risk limit (whipsaw prevention)
+        elif active_pos.profit <= -R:
+            log_queue.put(f"[{symbol}] Active {pos_type} position {active_pos.ticket} hit stop loss/risk limit of -${R:.2f} (Profit: ${active_pos.profit:.2f}). Closing.")
             r = close_position(active_pos, log_queue, "Position reversed")
             if realized_pnl_accumulator is not None:
                 realized_pnl_accumulator[0] += r
@@ -578,6 +616,7 @@ def process_dual_buy_sell_logic(config: SymbolConfig, log_queue, margin_safe=Tru
             symbol_state["buy_ticket"] = None
             symbol_state["sell_ticket"] = None
             symbol_state["stage"] = 1
+            symbol_state["max_stage2_profit"] = None
             state[symbol] = symbol_state
             save_bot_state(state)
 
@@ -649,6 +688,8 @@ def run_bot(configs, log_queue, min_margin_level=200.0, shared_pnl=None):
                             if pos:
                                 close_position(pos, log_queue, "Bot shutdown")
                             symbol_state[tk_key] = None
+                    symbol_state["stage"] = 1
+                    symbol_state["max_stage2_profit"] = None
                     
                     state[symbol] = symbol_state
                 save_bot_state(state)
