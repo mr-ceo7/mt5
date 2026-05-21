@@ -3,9 +3,9 @@
         "initial_buy_ticket": 8649485793,
         "active_hedge_ticket": 8649486152,
         "buy_ticket": null,
-        "sell_ticket": 8649520465,
+        "sell_ticket": 8649526782,
         "stage": 2,
-        "max_stage2_profit": 1.51
+        "max_stage2_profit": 4.88
     },
     "EURUSD": {
         "strategy_type": "dual_buy_sell",
